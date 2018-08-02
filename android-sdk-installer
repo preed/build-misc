@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+#
+# This code based off of https://github.com/BuddyBuild/android-sdk-installer,
+# which was based off of https://github.com/journeyapps/android-sdk-installer,
+# which notes in the README that it, too, is MIT licensed.
+#
+# MIT License
+#
+# Additions/Modifications Copyright (c) 2017-2018 Vernier Software & Technology
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+
+#set -x
+set -e
+
+## This sets up a handler that allows sub-functions to terminate the calling
+## shell when necessary. We use this to ensure that we can halt a build script
+## that calls us when we need to
+trap "exit 1" TERM
+export _calling_script_pid="$$"
+
+function abort_script() {
+   local _abort_message="$1"
+
+   if test -z "$_abort_message"; then
+      _abort_message="$0: unspecified failure. Aborting script execution."
+   fi
+
+   echo "$_abort_message" >&2
+   kill -s TERM $_calling_script_pid
+}
+
+# SDK Tools
+# Please refer to https://dl.google.com/android/repository/repository2-1.xml
+
+# This is where all the links for the latest SDK Tools will be
+# https://dl.google.com/android/repository/sdk-tools-linux_3952940.zip
+#ANDROID_SDK_VERSION=26.0.2
+
+# Initialize Argument variables
+
+ARG_ENV_FILE=""
+ARG_JDK_VER=""
+ARG_INSTALL_DIR=""
+ARG_LIST_ANDROID_PKG_ATOMS=""
+ARG_PKG_MANIFEST=""
+ARG_SDK_TOOLS_FILE=""
+
+# Per the Android tool:
+#
+# "android" SDK commands can be translated to sdkmanager commands on a
+# best-effort basis. Continue? (This prompt can be suppressed with the
+# --use-sdk-wrapper command-line argument or by setting the USE_SDK_WRAPPER
+# environment variable) [y/N]: y
+#
+# So, set that environment variable
+export USE_SDK_WRAPPER=1
+
+# Alias functions for Android SDK commands
+sdkmanager () {
+   test -d "$ANDROID_HOME" || abort_script "sdkmanager wrapper: Invalid ANDROID_HOME"
+   "$ANDROID_HOME/tools/bin/sdkmanager" "$@"
+}
+
+android () {
+   test -d "$ANDROID_HOME" || abort_script "android wrapper: Invalid ANDROID_HOME"
+   "$ANDROID_HOME/tools/android" "$@"
+}
+
+function extract_sdktools () {
+   echo "Extracting SDK Tools"
+   test -n "$ANDROID_HOME" || abort_script "extract_sdktools(): empty ANDROID_HOME"
+   test -f "$ARG_SDK_TOOLS_FILE" || abort_script "install_sdktools(): Invalid SDK file: $ARG_SDK_TOOLS_FILE"
+   unzip -q -o -d $ANDROID_HOME $ARG_SDK_TOOLS_FILE
+}
+
+function overwrite_sdktools () {
+   echo "Overwriting SDK Tools in $INSTALLER_DIR"
+   rm -rf $TOOLS_DIR
+   extract_sdktools
+}
+
+function update_sdkmanager () {
+   sdkmanager --update
+}
+
+function create_license_files() {
+   test -d "$ANDROID_HOME" || abort_script "create_license_files(): ANDROID_HOME directory $ANDROID_HOME does not exist"
+   local _license_dir="$ANDROID_HOME/licenses"
+   mkdir -p "$_license_dir"
+   echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55" > "$_license_dir/android-sdk-license"
+   echo -e "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$_license_dir/android-sdk-preview-license"
+}
+
+function accept_licenses () {
+   yes | sdkmanager --licenses
+}
+
+function list_android_package_atoms() {
+   # This was really the main thing we kept from the original
+   # https://github.com/BuddyBuild/android-sdk-installer/blob/master/android-sdk-installer
+
+   sdkmanager --list --include_obsolete --verbose |\
+   egrep '^\S+'      |\
+   sed -E '/(---)/d'  |\
+   sed -E '/(Info)/d' |\
+   sed -E '/(Installed)/d' |\
+   sed -E '/(Available)/d' |\
+   sed -E '/(sources)/d' |\
+   sed -E '/(docs)/d' |\
+   sed -E '/(mips)/d' |\
+   sed -E '/(intel)/d' |\
+   sed -E '/(android-tv)/d' |\
+   sed -E '/(android-wear)/d' |\
+   sed -E '/(usb)/d' |\
+   sed -E '/(x86)/d' |\
+   sed -E '/(arm64)/d' |\
+   sed -E '/(add-ons;addon-google_apis-google-(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19))/d' |\
+   sed -E '/(lldb;2.(0|1|2))/d' |\
+   # emulators no longer really work in our environment
+   sed -E '/(system-images)/d' |\
+   sed -E '/(^tools)/d' |\
+   sed -E '/(done)/d'
+}
+
+
+function generate_package_list () {
+   # Basically install every package...
+   local _pkg_list_to_create="$1"
+
+   test -f "$_pkg_list_to_create" || abort_script "get_package_list(): no _pkg_list_to_create passed"
+
+   # Recursively call ourselves to generate the package list
+   $0 --install-dir "$ARG_INSTALL_DIR" --list-android-packages > $_pkg_list_to_create
+}
+
+function install_android_sdk_packages() {
+   local _pkg_list="$1"
+   test -f "$_pkg_list" || abort_script "install_android_sdk_packages(): no _pkg_list passed"
+   sdkmanager --package_file=$_pkg_list --verbose
+}
+
+function generate_env_file() {
+   local _env_file="$1"
+
+   test -z "$_env_file" && abort_script "generate_env_file(): invalid arg"
+   echo "export ANDROID_HOME=$ANDROID_HOME" > $_env_file
+   echo "export PATH=$ANDROID_HOME/tools:$ANDROID_HOME/platform-tools:$TOOLS_DIR:\$PATH" >> $_env_file
+}
+
+function help() {
+   cat << EOF
+$0
+
+Installs and sets up an Android SDK.
+
+    -e, --env-file              A file to dump useful environment variables
+                                into, for easy sourcing in a bash-style shell
+                                later. Optional.
+
+    -h, --help                  Display this help message.
+
+    -i, --install-dir           The target directory to install the SDK into.
+                                Required.
+
+    -j, --jdk-version           An installed version of the Java JDK to
+                                install the Android SDK against. If not
+                                specified, a single installed Java SDK will be
+                                searched for. Optional.
+
+    -l, --list-android-packages Use the installed Android SDK to output a list
+                                of all available packages; this can be used
+                                to create a file suitable to pass as the
+                                --package-manifest argument.
+
+    -p, --package-manifest      A list of Android SDK packages to install
+                                after the SDK tools are installed. If not
+                                specified, ALL the available packages will
+                                be installed (which probably isn't what you
+                                want!) See the --list-android-packages argument.
+                                Optional.
+
+    -s, --android-sdk-tools     The Android SDK tools zipfile to install to
+                                install the rest of the Android SDK. Required.
+
+EOF
+}
+
+function main () {
+   local positional_args=()
+
+   # Yanked from: https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
+   # It's not that I didn't know how to parse bash arguments, it's that I wanted
+   # a more portable way to do it than getopt(s), so in searching, this had
+   # manual code to do it (which I modified slightly)
+   while [[ $# -gt 0 ]]; do
+      local _arg="$1"
+
+      case $_arg in
+         -h|--help)
+            help
+            return 0
+            ;;
+         -i|--install-dir)
+            ARG_INSTALL_DIR="$2"
+            shift # past argument
+            shift # past value
+            ;;
+         -e|--env-file)
+            ARG_ENV_FILE="$2"
+            shift
+            shift
+            ;;
+         -j|--jdk-version)
+            ARG_JDK_VER="$2"
+            shift
+            shift
+            ;;
+         -p|--package-manifest)
+            ARG_PKG_MANIFEST="$2"
+            shift
+            shift
+            ;;
+         -s|--android-sdk-tools)
+            ARG_SDK_TOOLS_FILE="$2"
+            shift
+            shift
+            ;;
+         -l|--list-android-packages)
+            ARG_LIST_ANDROID_PKG_ATOMS=1
+            shift
+            ;;
+         *)
+            # unknown option
+            positional_args+=("$1")
+            shift # past argument
+            ;;
+      esac
+   done
+
+   # restore positional parameters
+   set -- "${POSITIONAL[@]}"
+
+   export ANDROID_HOME="$ARG_INSTALL_DIR"
+   export TOOLS_DIR="$ANDROID_HOME/tools"
+
+   if test -z "$ARG_INSTALL_DIR"; then
+      echo "Missing --install-dir" >&2
+      return 1
+   fi
+
+   if test -n "$ARG_LIST_ANDROID_PKG_ATOMS"; then
+      list_android_package_atoms
+      return 0
+   fi
+
+   # Validate --jdk-version
+   local _jdk_version_dir=""
+   if test -z "$ARG_JDK_VER"; then
+      echo "No --jdk-version argument given; attempting to detect Java version." >&2
+      _jdk_version_dir="$(cd /Library/Java/JavaVirtualMachines 2> /dev/null && ls -1d *.jdk 2> /dev/null)"
+      if [[ "$(echo "$_jdk_version_dir" | wc -w)" -ne 1 ]]; then
+         echo "Could not find one JDK directory: $_jdk_version_dir" >&2
+         return 1
+      fi
+   else
+      _jdk_version_dir="jdk${ARG_JDK_VER}.jdk"
+   fi
+
+   export JAVA_HOME="/Library/Java/JavaVirtualMachines/${_jdk_version_dir}/Contents/Home"
+   echo "$0: Using JDK in $JAVA_HOME"
+
+   # Validate ARG_SDK_TOOLS_FILE
+   if test -n "$ARG_SDK_TOOLS_FILE"; then
+      if ! test -f "$ARG_SDK_TOOLS_FILE"; then
+         echo "Invalid --android-sdk-tools file: $ARG_SDK_TOOLS_FILE" >&2
+         return 1
+      fi
+   else
+      echo "Must specify --android-sdk-tools file to install" >&2
+      return 1
+   fi
+
+   # Validate ARG_ENV_FILE
+   if test -f "$ARG_ENV_FILE"; then
+      echo "Environment file $ARG_ENV_FILE already exists." >&2
+      return 1
+   fi
+
+   # Validate ARG_INSTALL_DIR
+   if test -e "$ARG_INSTALL_DIR"; then
+      echo "SDK installation directory exists: $ARG_INSTALL_DIR" >&2
+      echo "This script will DELETE that directory." >&2
+      echo "Press return to continue; ctrl-c to cancel." >&2
+      read
+   fi
+
+   # Validate ARG_PKG_MANIFEST
+   # Copy the variable, so we know if an argument was specified, and if it
+   # wasn't (and we created a tmp file, delete it when the script is done).
+   local _package_manifest=""
+   if test -z "$ARG_PKG_MANIFEST"; then
+      _package_manifest="$(mktemp -t android-sdk-installer)" || abort_script "main: mktemp failed"
+   else
+      _package_manifest="$ARG_PKG_MANIFEST"
+   fi
+
+   echo "$0: Installing in: $ARG_INSTALL_DIR"
+
+   echo "$0: Cleaning installation directory: $ARG_INSTALL_DIR"
+   rm -rf $ARG_INSTALL_DIR
+   mkdir -p $ARG_INSTALL_DIR $ANDROID_HOME $TOOLS_DIR
+
+   echo "$0: Installing SDK Tools in $INSTALLER_DIR"
+   extract_sdktools
+   echo "$0: Creating license file shims/accepting license"
+   create_license_files
+   accept_licenses
+
+   echo "$0: Updating SDK manager"
+   update_sdkmanager
+
+   # We only need to generate the package list if one wasn't supplied to us
+   # Note: this recursively calls this script, and it assumes the SDK tools
+   # have already been installed.
+   if test -z "$ARG_PKG_MANIFEST"; then
+      generate_package_list $_package_manifest
+   fi
+
+   overwrite_sdktools
+
+   echo "$0: Installing SDK and other Android resources"
+   install_android_sdk_packages $_package_manifest
+
+   if test -n "$ARG_ENV_FILE"; then
+      echo "$0: Generating Android SDK env file: $ARG_ENV_FILE"
+      generate_env_file $ARG_ENV_FILE
+   fi
+
+   if test -z "$ARG_PKG_MANIFEST"; then
+      # Clean up the tmp file we used for the package manifest, if we created it
+      test -n "$_package_manifest" && rm $_package_manifest
+   fi
+
+   return 0
+}
+
+main "$@"

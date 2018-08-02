@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+#
+# This code based off of https://github.com/BuddyBuild/android-sdk-installer,
+# which was based off of https://github.com/journeyapps/android-sdk-installer,
+# which notes in the README that it, too, is MIT licensed.
+#
+# MIT License
+#
+# Additions/Modifications Copyright (c) 2017-2018 Vernier Software & Technology
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+#set -x
+set -e
+
+## This sets up a handler that allows sub-functions to terminate the calling
+## shell when necessary. We use this to ensure that we can halt a build script
+## that calls us when we need to
+trap "exit 1" TERM
+export _calling_script_pid="$$"
+
+function abort_script() {
+   local _abort_message="$1"
+
+   if test -z "$_abort_message"; then
+      _abort_message="$0: unspecified failure. Aborting script execution."
+   fi
+
+   echo "$_abort_message" >&2
+   kill -s TERM $_calling_script_pid
+}
+
+# Initialize Argument variables
+ARG_INSTALL_DIR="$HOME/Library/Android"
+ARG_NDK_FILE=""
+ARG_NDK_VER=""
+
+function extract_ndk() {
+   test -d "$ARG_INSTALL_DIR" || abort_script "extract_ndk(): Invalid ARG_INSTALL_DIR"
+   test -f "$ARG_NDK_FILE" || abort_script "extract_ndk(): Invalid ARG_NDK_FILE"
+   test -n "$ARG_NDK_VER" || abort_script "extract_ndk(): Invalid ARG_NDK_VER"
+
+   unzip -q -o -d $ARG_INSTALL_DIR $ARG_NDK_FILE
+}
+
+function help() {
+   cat << EOF
+$0
+
+Installs and sets up an Android NDK.
+
+   -h, --help                 Display this help message.
+
+   -i, --install-dir          The directory to install the Android NDK into.
+                              Required.
+
+   -f, --android-ndk          The Android NDK zip file to install. Required.
+
+   -v, --android-ndk-version  The version of the Android NDK to install. This
+                              must match the version of the Android NDK file
+                              specified in --android-ndk. Required.
+
+EOF
+}
+
+function main() {
+   # Yanked from: https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
+   # It's not that I didn't know how to parse bash arguments, it's that I wanted
+   # a more portable way to do it than getopt(s), so in searching, this had
+   # manual code to do it (which I modified slightly)
+   while [[ $# -gt 0 ]]; do
+      local _arg="$1"
+
+      case $_arg in
+         -h|--help)
+            help
+            return 0
+            ;;
+         -i|--install-dir)
+            ARG_INSTALL_DIR="$2"
+            shift
+            shift
+            ;;
+         -f|--android-ndk)
+            ARG_NDK_FILE="$2"
+            shift
+            shift
+            ;;
+         -v|--android-ndk-version)
+            ARG_NDK_VER="$2"
+            shift
+            shift
+            ;;
+         *)
+            # unknown option
+            positional_args+=("$1")
+            shift # past argument
+            ;;
+      esac
+   done
+
+   if ! test -d "$ARG_INSTALL_DIR"; then
+      echo "Invalid installation directory: $ARG_INSTALL_DIR" >&2
+      return 1
+   fi
+
+   if test -z "$(echo "$ARG_NDK_VER" | grep -E '^r\d+\w')"; then
+      echo "Invalid Android NDK version: $ARG_NDK_VER" >&2
+      return 1
+   fi
+
+   if ! test -f "$ARG_NDK_FILE"; then
+      echo "Invalid Android NDK install file: $ARG_NDK_FILE" >&2
+      return 1
+   fi
+
+   echo "$0: Extracting Android NDK into $ARG_INSTALL_DIR..."
+   extract_ndk
+
+   return 0
+}
+
+main "$@"
